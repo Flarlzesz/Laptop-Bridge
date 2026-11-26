@@ -10,10 +10,12 @@ The website (PHP) reads those rows and shows them live.
       python3 bridge.py --replay ~/Documents/sample_records.jsonl
   Same, but don't send anything (prints what it would store):
       python3 bridge.py --replay ~/Documents/sample_records.jsonl --dry-run
-  Live from the Arduino over USB (needs: pip3 install pyserial):
-      python3 bridge.py --port /dev/cu.usbmodem1101
+  Live from the Arduino over USB (needs: python3 -m pip install pyserial):
+      python3 bridge.py --port /dev/cu.usbmodem1101     (macOS)
+      py bridge.py --port COM3                          (Windows)
 
-Settings come from environment variables or from ~/.robohack-bridge.env (see bridge/env.example):
+Settings come from environment variables or from ~/.robohack-bridge.env (see env.example);
+on Windows that is %USERPROFILE%/.robohack-bridge.env (your user folder):
   SUPABASE_URL, SUPABASE_SECRET_KEY, SERIAL_PORT
 The env file lives OUTSIDE the website folder on purpose: Caddy would serve a file inside it.
 
@@ -109,6 +111,8 @@ def now_iso():
 
 
 def log(msg):
+    # never crash on a console that can't show a character (older Windows code pages)
+    msg = str(msg).encode(sys.stdout.encoding or "utf-8", "replace").decode(sys.stdout.encoding or "utf-8")
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
@@ -410,7 +414,7 @@ def serial_lines(port, baud, stop):
     try:
         import serial  # pyserial, only needed for the real robot
     except ImportError:
-        sys.exit("pyserial is missing. Install it with:  pip3 install pyserial")
+        sys.exit("pyserial is missing. Install it with:  python3 -m pip install pyserial  (Windows: py -m pip install pyserial)")
     while not stop.is_set():
         try:
             with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=1) as ser:  # spec 2.1: 8N1
@@ -449,7 +453,7 @@ def main():
         url, key = env.get("SUPABASE_URL"), env.get("SUPABASE_SECRET_KEY")
         if not url or not key:
             sys.exit(f"SUPABASE_URL and SUPABASE_SECRET_KEY are missing. Put them in {args.env} "
-                     f"(see bridge/env.example), or run with --dry-run.")
+                     f"(see env.example), or run with --dry-run.")
         if key.startswith("sb_publishable_"):
             sys.exit("That is the publishable (read-only) key. The bridge needs the SECRET key (sb_secret_...).")
         db = Supabase(url, key)
@@ -477,7 +481,8 @@ def main():
     else:
         port = args.port or env.get("SERIAL_PORT")
         if not port:
-            sys.exit("No serial port. Use --port /dev/cu.usbmodem... or set SERIAL_PORT (list ports: ls /dev/cu.*)")
+            sys.exit("No serial port. Use --port /dev/cu.usbmodem... (macOS: ls /dev/cu.*) or --port COM3 "
+                     "(Windows: Device Manager -> Ports), or set SERIAL_PORT in the env file")
         lines = serial_lines(port, args.baud, stop)
 
     try:
@@ -486,7 +491,7 @@ def main():
             if stop.is_set():
                 break
     finally:
-        log("stopping, sending what is left…")
+        log("stopping, sending what is left...")
         sender.finish()
         bridge.close()
         s = bridge.stats
