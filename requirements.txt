@@ -1,0 +1,1 @@
+pyserial>=3.5   # only for the real robot (serial mode); replay needs nothing
