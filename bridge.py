@@ -46,9 +46,13 @@ FIELDS = {
     "temp_c100": (-5500, 12500),
     "ax_mg": (-4000, 4000), "ay_mg": (-4000, 4000), "az_mg": (-4000, 4000),
     "slip": (0, 1),
+    # peak acceleration since the previous record (added by the sensor team, not in spec v1)
+    "ax_pk_mg": (0, 32767), "ay_pk_mg": (0, 32767), "az_pk_mg": (0, 32767),
 }
+PEAK_FIELDS = ("ax_pk_mg", "ay_pk_mg", "az_pk_mg")
 # Database column limits (smallint / integer), so one wild value can never make an insert fail
 COLUMN_LIMITS = {"fix": 32767, "temp_c100": 32767, "ax_mg": 32767, "ay_mg": 32767, "az_mg": 32767,
+                 "ax_pk_mg": 32767, "ay_pk_mg": 32767, "az_pk_mg": 32767,
                  "slip": 32767, "z_mv": 2**31 - 1, "opt_a": 2**31 - 1, "opt_b": 2**31 - 1, "opt_d": 2**31 - 1,
                  "lat_e7": 2**31 - 1, "lon_e7": 2**31 - 1}
 TEMP_POWER_ON = 8500          # DS18B20 85 °C power-on value -> null (spec Table 2)
@@ -367,6 +371,7 @@ class Bridge:
             "slip": v["slip"] if v["slip"] in (0, 1) else 0,
             "reflectance": reflectance, "surface_pred": pred,
             "fault_flags": sorted(set(faults)), "truth": truth,
+            **({k: v[k] for k in PEAK_FIELDS} if self.args.peak_columns else {}),
         }
 
     def print_progress(self, row):
@@ -417,8 +422,15 @@ def serial_lines(port, baud, stop):
         sys.exit("pyserial is missing. Install it with:  python3 -m pip install pyserial  (Windows: py -m pip install pyserial)")
     while not stop.is_set():
         try:
-            with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=1) as ser:  # spec 2.1: 8N1
-                log(f"listening on {port} at {baud} baud")
+            # spec 2.1: 8N1. DTR and RTS stay low, so opening the port does not reset the Arduino
+            # (the Mega reboots on a DTR pulse). If it is already running, the bridge joins mid-session.
+            ser = serial.Serial(baudrate=baud, bytesize=8, parity="N", stopbits=1, timeout=1)
+            ser.port = port
+            ser.dtr = False
+            ser.rts = False
+            ser.open()
+            with ser:
+                log(f"listening on {port} at {baud} baud (DTR/RTS off, Arduino not reset)")
                 while not stop.is_set():
                     raw = ser.readline()
                     if raw:
@@ -447,6 +459,7 @@ def main():
     args = p.parse_args()
 
     env = load_env(args.env)
+    args.peak_columns = True
     if args.dry_run:
         db = DryRun(args.verbose)
     else:
@@ -462,6 +475,12 @@ def main():
         except Exception as e:
             hint = " Did you run database/schema.sql?" if "PGRST205" in str(e) else ""
             sys.exit(f"Cannot use Supabase: {e}.{hint}")
+        try:
+            db.request("GET", "readings?select=" + ",".join(PEAK_FIELDS) + "&limit=1")
+        except Exception:
+            args.peak_columns = False
+            log("WARNING: the readings table has no ax_pk_mg/ay_pk_mg/az_pk_mg columns yet, so peaks are "
+                "not stored. Run database/add_peak_accel.sql in Supabase, then restart the bridge.")
 
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
